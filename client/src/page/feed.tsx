@@ -1,3 +1,4 @@
+import type { Feed } from "@rin/api";
 import { useContext, useEffect, useRef, useState } from "react";
 import { Helmet } from "react-helmet";
 import { useTranslation } from "react-i18next";
@@ -8,50 +9,44 @@ import { useAlert, useConfirm } from "../components/dialog";
 import { HashTag } from "../components/hashtag";
 import { Waiting } from "../components/loading";
 import { Markdown } from "../components/markdown";
-import { client } from "../main";
+import { client } from "../app/runtime";
 import { ClientConfigContext } from "../state/config";
 import { ProfileContext } from "../state/profile";
-import { headersWithAuth } from "../utils/auth";
+import { useSiteConfig } from "../hooks/useSiteConfig";
 import { siteName } from "../utils/constants";
 import { timeago } from "../utils/timeago";
 import { Button } from "../components/button";
 import { Tips } from "../components/tips";
-import { useLoginModal } from "../hooks/useLoginModal";
 import mermaid from "mermaid";
+import { AdjacentSection } from "../components/adjacent_feed.tsx";
+import { stripImageUrlMetadata } from "../utils/image-upload";
 
-type Feed = {
-  id: number;
-  title: string | null;
-  content: string;
-  uid: number;
-  createdAt: Date;
-  updatedAt: Date;
-  hashtags: {
-    id: number;
-    name: string;
-  }[];
-  user: {
-    avatar: string | null;
-    id: number;
-    username: string;
-  };
-  pv: number;
-  uv: number;
-};
+function extractFirstMarkdownImageUrl(content: string) {
+  const match = /!\[.*?\]\((\S+?)(?:\s+"[^"]*")?\)/.exec(content);
+  if (!match) {
+    return undefined;
+  }
+
+  return stripImageUrlMetadata(match[1]);
+}
 
 export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Element, clean: (id: string) => void }) {
   const { t } = useTranslation();
+  const siteConfig = useSiteConfig();
   const profile = useContext(ProfileContext);
   const [feed, setFeed] = useState<Feed>();
   const [error, setError] = useState<string>();
   const [headImage, setHeadImage] = useState<string>();
   const ref = useRef("");
-  const [_, setLocation] = useLocation();
+  const [, setLocation] = useLocation();
   const { showAlert, AlertUI } = useAlert();
   const { showConfirm, ConfirmUI } = useConfirm();
   const [top, setTop] = useState<number>(0);
   const config = useContext(ClientConfigContext);
-  const counterEnabled = config.get<boolean>('counter.enabled');
+  const counterEnabled = config.getBoolean('counter.enabled');
+  const hasAISummary = Boolean(feed?.ai_summary?.trim());
+  const showAISummaryState = feed?.ai_summary_status === "pending" || feed?.ai_summary_status === "processing" || feed?.ai_summary_status === "failed";
+  const hashtags = Array.isArray(feed?.hashtags) ? feed.hashtags : [];
   function deleteFeed() {
     // Confirm
     showConfirm(
@@ -59,11 +54,8 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
       t("article.delete.confirm"),
       () => {
         if (!feed) return;
-        client
-          .feed({ id: feed.id })
-          .delete(null, {
-            headers: headersWithAuth(),
-          })
+        client.feed
+          .delete(feed.id)
           .then(({ error }) => {
             if (error) {
               showAlert(error.value as string);
@@ -83,13 +75,8 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
       isUnTop ? t("article.top.confirm") : t("article.untop.confirm"),
       () => {
         if (!feed) return;
-        client
-          .feed.top({ id: feed.id })
-          .post({
-            top: topNew,
-          }, {
-            headers: headersWithAuth(),
-          })
+        client.feed
+          .setTop(feed.id, topNew)
           .then(({ error }) => {
             if (error) {
               showAlert(error.value as string);
@@ -105,23 +92,18 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
     setFeed(undefined);
     setError(undefined);
     setHeadImage(undefined);
-    client
-      .feed({ id })
-      .get({
-        headers: headersWithAuth(),
-      })
+    client.feed
+      .get(id)
       .then(({ data, error }) => {
         if (error) {
           setError(error.value as string);
         } else if (data && typeof data !== "string") {
           setTimeout(() => {
-            setFeed(data);
-            setTop(data.top);
-            // Extract head image
-            const img_reg = /!\[.*?\]\((.*?)\)/;
-            const img_match = img_reg.exec(data.content);
-            if (img_match) {
-              setHeadImage(img_match[1]);
+            setFeed(data as any);
+            setTop(data.top || 0);
+            const headImageUrl = extractFirstMarkdownImageUrl(data.content);
+            if (headImageUrl) {
+              setHeadImage(headImageUrl);
             }
             clean(id);
           }, 0);
@@ -137,7 +119,7 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
     mermaid.run({
       suppressErrors: true,
       nodes: document.querySelectorAll("pre.mermaid_default")
-    }).then(()=>{
+    }).then(() => {
       mermaid.initialize({
         startOnLoad: false,
         theme: "dark",
@@ -153,10 +135,10 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
     <Waiting for={feed || error}>
       {feed && (
         <Helmet>
-          <title>{`${feed.title ?? "Unnamed"} - ${process.env.NAME}`}</title>
+          <title>{`${feed.title ?? "Unnamed"} - ${siteConfig.name}`}</title>
           <meta property="og:site_name" content={siteName} />
           <meta property="og:title" content={feed.title ?? ""} />
-          <meta property="og:image" content={headImage ?? process.env.AVATAR} />
+          <meta property="og:image" content={headImage ?? siteConfig.avatar} />
           <meta property="og:type" content="article" />
           <meta property="og:url" content={document.URL} />
           <meta
@@ -170,7 +152,7 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
           <meta name="author" content={feed.user.username} />
           <meta
             name="keywords"
-            content={feed.hashtags.map(({ name }) => name).join(", ")}
+            content={hashtags.map(({ name }) => name).join(", ")}
           />
           <meta
             name="description"
@@ -258,7 +240,7 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
                         </button>
                         <Link
                           aria-label={t("edit")}
-                          href={`/writing/${feed.id}`}
+                          href={`/admin/writing/${feed.id}`}
                           className="flex-1 flex flex-col items-end justify-center px-2 py bg-secondary bg-button rounded-full transition"
                         >
                           <i className="ri-edit-2-line dark:text-neutral-400" />
@@ -274,11 +256,36 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
                     )}
                   </div>
                 </div>
+                {(hasAISummary || showAISummaryState) && (
+                  <div className="my-4 p-4 rounded-xl bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 border border-purple-100 dark:border-purple-800/30">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2">
+                        <i className="ri-sparkling-2-fill text-purple-500" />
+                        <span className="text-sm font-medium text-purple-600 dark:text-purple-400">
+                          {t('ai_summary.title')}
+                        </span>
+                      </div>
+                      {showAISummaryState ? (
+                        <span className="rounded-full bg-white/70 px-2 py-1 text-xs font-medium text-purple-700 dark:bg-white/10 dark:text-purple-300">
+                          {t(`ai_summary.status.${feed.ai_summary_status}`)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="text-sm t-secondary leading-relaxed whitespace-pre-wrap">
+                      {hasAISummary ? feed.ai_summary : t(`ai_summary.message.${feed.ai_summary_status}`)}
+                    </p>
+                    {feed.ai_summary_status === "failed" && feed.ai_summary_error ? (
+                      <p className="mt-2 text-xs text-rose-600 dark:text-rose-300 whitespace-pre-wrap">
+                        {feed.ai_summary_error}
+                      </p>
+                    ) : null}
+                  </div>
+                )}
                 <Markdown content={feed.content} />
                 <div className="mt-6 flex flex-col gap-2">
-                  {feed.hashtags.length > 0 && (
+                  {hashtags.length > 0 && (
                     <div className="flex flex-row flex-wrap gap-x-2">
-                      {feed.hashtags.map(({ name }, index) => (
+                      {hashtags.map(({ name }, index) => (
                         <HashTag key={index} name={name} />
                       ))}
                     </div>
@@ -296,12 +303,13 @@ export function FeedPage({ id, TOC, clean }: { id: string, TOC: () => JSX.Elemen
                   </div>
                 </div>
               </article>
+              <AdjacentSection id={id} setError={setError} />
               {feed && <Comments id={`${feed.id}`} />}
               <div className="h-16" />
             </main>
             <div className="w-80 hidden lg:block relative">
               <div
-                className={`ml-2 start-0 end-0 top-[5.5rem] sticky`}
+                className={`start-0 end-0 top-[5.5rem] sticky`}
               >
                 <TOC />
               </div>
@@ -319,12 +327,12 @@ export function TOCHeader({ TOC }: { TOC: () => JSX.Element }) {
   const [isOpened, setIsOpened] = useState(false);
 
   return (
-    <div className="lg:hidden">
+    <div className="shrink-0 lg:hidden">
       <button
         onClick={() => setIsOpened(true)}
         className="w-10 h-10 rounded-full flex flex-row items-center justify-center"
       >
-        <i className="ri-menu-2-fill t-primary ri-lg"></i>
+        <i className="ri-menu-2-line text-neutral-500 transition-colors hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100 ri-lg md:ri-sm md:t-secondary"></i>
       </button>
       <ReactModal
         isOpen={isOpened}
@@ -369,42 +377,70 @@ function CommentInput({
 }) {
   const { t } = useTranslation();
   const [content, setContent] = useState("");
+  const [guestName, setGuestName] = useState("");
+  const [guestEmail, setGuestEmail] = useState("");
+  const [guestWebsite, setGuestWebsite] = useState("");
   const [error, setError] = useState("");
   const { showAlert, AlertUI } = useAlert();
   const profile = useContext(ProfileContext);
-  const { LoginModal, setIsOpened } = useLoginModal()
+  const [, setLocation] = useLocation();
+  const config = useContext(ClientConfigContext);
+  // guest comments enabled by default; admin can disable via client config `comment.guest.enabled=false`
+  const rawGuest = config.get('comment.guest.enabled');
+  const guestEnabled = rawGuest !== false && rawGuest !== 'false';
   function errorHumanize(error: string) {
     if (error === "Unauthorized") return t("login.required");
     else if (error === "Content is required") return t("comment.empty");
+    else if (error === "Guest name is required") return t("comment.guest_name_required");
     return error;
   }
   function submit() {
-    if (!profile) {
-      setIsOpened(true)
-      return;
+    if (profile) {
+      client.comment
+        .create(parseInt(id), { content })
+        .then(({ error }) => {
+          if (error) {
+            setError(errorHumanize(error.value as string));
+          } else {
+            setContent("");
+            setError("");
+            showAlert(t("comment.success"), () => {
+              onRefresh();
+            });
+          }
+        });
+    } else if (guestEnabled) {
+      if (!guestName.trim()) {
+        setError(t("comment.guest_name_required"));
+        return;
+      }
+      client.comment
+        .create(parseInt(id), {
+          content,
+          guestName: guestName.trim(),
+          guestEmail: guestEmail.trim() || undefined,
+          guestWebsite: guestWebsite.trim() || undefined,
+        })
+        .then(({ error }) => {
+          if (error) {
+            setError(errorHumanize(error.value as string));
+          } else {
+            setContent("");
+            setGuestName("");
+            setGuestEmail("");
+            setGuestWebsite("");
+            setError("");
+            showAlert(t("comment.success"), () => {
+              onRefresh();
+            });
+          }
+        });
+    } else {
+      setLocation('/login');
     }
-    client.feed
-      .comment({ feed: id })
-      .post(
-        { content },
-        {
-          headers: headersWithAuth(),
-        }
-      )
-      .then(({ error }) => {
-        if (error) {
-          setError(errorHumanize(error.value as string));
-        } else {
-          setContent("");
-          setError("");
-          showAlert(t("comment.success"), () => {
-            onRefresh();
-          });
-        }
-      });
   }
   return (
-    <div className="w-full rounded-2xl bg-w t-primary m-2 p-6 items-end flex flex-col">
+    <div className="w-full rounded-2xl bg-w t-primary p-6 items-end flex flex-col">
       <div className="flex flex-col w-full items-start mb-4">
         <label htmlFor="comment">{t("comment.title")}</label>
       </div>
@@ -422,11 +458,46 @@ function CommentInput({
         >
           {t("comment.submit")}
         </button>
+      </>) : guestEnabled ? (<>
+        <input
+          type="text"
+          placeholder={t("comment.guest_name_placeholder")}
+          className="bg-w w-full rounded-lg px-3 py-2 mb-2 border border-gray-200 dark:border-gray-700"
+          value={guestName}
+          onChange={(e) => setGuestName(e.target.value)}
+        />
+        <input
+          type="email"
+          placeholder={t("comment.guest_email_placeholder")}
+          className="bg-w w-full rounded-lg px-3 py-2 mb-2 border border-gray-200 dark:border-gray-700"
+          value={guestEmail}
+          onChange={(e) => setGuestEmail(e.target.value)}
+        />
+        <input
+          type="url"
+          placeholder={t("comment.guest_website_placeholder")}
+          className="bg-w w-full rounded-lg px-3 py-2 mb-2 border border-gray-200 dark:border-gray-700"
+          value={guestWebsite}
+          onChange={(e) => setGuestWebsite(e.target.value)}
+        />
+        <textarea
+          id="comment"
+          placeholder={t("comment.placeholder.title")}
+          className="bg-w w-full h-24 rounded-lg"
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+        />
+        <button
+          className="mt-4 bg-theme text-white px-4 py-2 rounded-full"
+          onClick={submit}
+        >
+          {t("comment.submit")}
+        </button>
       </>) : (
         <div className="flex flex-row w-full items-center justify-center space-x-2 py-12">
           <button
             className="mt-2 bg-theme text-white px-4 py-2 rounded-full"
-            onClick={() => setIsOpened(true)}
+            onClick={() => setLocation('/login')}
           >
             {t("login.required")}
           </button>
@@ -434,7 +505,6 @@ function CommentInput({
       )}
       {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
       <AlertUI />
-      <LoginModal />
     </div>
   );
 }
@@ -444,12 +514,15 @@ type Comment = {
   content: string;
   createdAt: Date;
   updatedAt: Date;
-  user: {
+  user?: {
     id: number;
     username: string;
     avatar: string | null;
     permission: number | null;
-  };
+  } | null;
+  guestName?: string;
+  guestEmail?: string;
+  guestWebsite?: string;
 };
 
 function Comments({ id }: { id: string }) {
@@ -460,16 +533,13 @@ function Comments({ id }: { id: string }) {
   const { t } = useTranslation();
 
   function loadComments() {
-    client.feed
-      .comment({ feed: id })
-      .get({
-        headers: headersWithAuth(),
-      })
+    client.comment
+      .list(parseInt(id))
       .then(({ data, error }) => {
         if (error) {
           setError(error.value as string);
         } else if (data && Array.isArray(data)) {
-          setComments(data);
+          setComments(data as any);
         }
       });
   }
@@ -480,7 +550,7 @@ function Comments({ id }: { id: string }) {
   }, [id]);
   return (
     <>
-      {config.get<boolean>('comment.enabled') &&
+      {config.getBoolean('comment.enabled') &&
         <div className="m-2 flex flex-col justify-center items-center">
           <CommentInput id={id} onRefresh={loadComments} />
           {error && (
@@ -524,16 +594,15 @@ function CommentItem({
   const { showAlert, AlertUI } = useAlert();
   const { t } = useTranslation();
   const profile = useContext(ProfileContext);
+  const commenterName = comment.user?.username || comment.guestName || t("anonymous");
+  const commenterAvatar = comment.user?.avatar || "/avatar.png";
   function deleteComment() {
     showConfirm(
       t("delete.comment.title"),
       t("delete.comment.confirm"),
       async () => {
-        client
-          .comment({ id: comment.id })
-          .delete(null, {
-            headers: headersWithAuth(),
-          })
+        client.comment
+          .delete(comment.id)
           .then(({ error }) => {
             if (error) {
               showAlert(error.value as string);
@@ -548,14 +617,24 @@ function CommentItem({
   return (
     <div className="flex flex-row items-start rounded-xl mt-2">
       <img
-        src={comment.user.avatar || ""}
+        src={commenterAvatar}
         className="w-8 h-8 rounded-full mt-4"
       />
       <div className="flex flex-col flex-1 w-0 ml-2 bg-w rounded-xl p-4">
         <div className="flex flex-row">
           <span className="t-primary text-base font-bold">
-            {comment.user.username}
+            {commenterName}
           </span>
+          {comment.guestWebsite && (
+            <a
+              href={comment.guestWebsite}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-2 text-gray-400 hover:text-theme transition-colors"
+            >
+              <i className="ri-external-link-line"></i>
+            </a>
+          )}
           <div className="flex-1 w-0" />
           <span
             title={new Date(comment.createdAt).toLocaleString()}
@@ -566,7 +645,7 @@ function CommentItem({
         </div>
         <p className="t-primary break-words">{comment.content}</p>
         <div className="flex flex-row justify-end">
-          {(profile?.permission || profile?.id == comment.user.id) && (
+          {(profile?.permission || (comment.user && profile?.id == comment.user.id)) && (
             <Popup
               arrow={false}
               trigger={

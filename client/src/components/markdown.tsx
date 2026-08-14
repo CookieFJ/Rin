@@ -12,12 +12,16 @@ import gfm from "remark-gfm";
 import remarkMermaid from "../remark/remarkMermaid";
 import { remarkAlert } from "remark-github-blockquote-alert";
 import remarkMath from "remark-math";
+import remarkBreaks from "remark-breaks";
 import Lightbox, { SlideImage } from "yet-another-react-lightbox";
 import Counter from "yet-another-react-lightbox/plugins/counter";
 import Download from "yet-another-react-lightbox/plugins/download";
 import Zoom from "yet-another-react-lightbox/plugins/zoom";
 import "yet-another-react-lightbox/styles.css";
+import { drawBlurhashToCanvas } from "../utils/blurhash";
 import { useColorMode } from "../utils/darkModeUtils";
+import { parseImageUrlMetadata } from "../utils/image-upload";
+import { useImageLoadState } from "../utils/use-image-load-state";
 
 
 const countNewlinesBeforeNode = (text: string, offset: number) => {
@@ -46,6 +50,69 @@ const isMarkdownImageLinkAtEnd = (text: string) => {
   return false;
 };
 
+function MarkdownImage({
+  src,
+  alt,
+  show,
+  rounded,
+  scale,
+  className,
+}: {
+  src?: string;
+  alt?: string;
+  show: (src?: string) => void;
+  rounded: boolean;
+  scale: string;
+  className?: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { src: cleanSrc, blurhash, width, height } = parseImageUrlMetadata(src);
+  const { failed, imageRef, loaded, onError, onLoad } = useImageLoadState(cleanSrc);
+  const roundedClass = rounded ? "rounded-xl" : "";
+  const aspectRatio = width && height ? `${width} / ${height}` : undefined;
+
+  useEffect(() => {
+    if (!blurhash || !canvasRef.current) {
+      return;
+    }
+    try {
+      drawBlurhashToCanvas(canvasRef.current, blurhash);
+    } catch (error) {
+      console.error("Failed to render blurhash", error);
+    }
+  }, [blurhash]);
+
+  return (
+    <span
+      className={`relative inline-block max-w-full overflow-hidden ${roundedClass}`}
+      style={{ zoom: scale, aspectRatio }}
+    >
+      {blurhash && !loaded ? (
+        <canvas
+          ref={canvasRef}
+          aria-hidden="true"
+          className={`absolute inset-0 h-full w-full scale-110 blur-sm ${roundedClass}`}
+        />
+      ) : null}
+      <img
+        ref={imageRef}
+        src={cleanSrc}
+        alt={alt}
+        width={width}
+        height={height}
+        onClick={() => {
+          show(cleanSrc);
+        }}
+        onLoad={onLoad}
+        onError={onError}
+        className={`mx-auto max-w-full cursor-zoom-in transition-opacity ${roundedClass} ${className || ""} ${
+          blurhash && (!loaded || failed) ? "opacity-0" : "opacity-100"
+        }`}
+      />
+    </span>
+  );
+}
+
 export function Markdown({ content }: { content: string }) {
   const colorMode = useColorMode();
   const [index, setIndex] = React.useState(-1);
@@ -60,7 +127,7 @@ export function Markdown({ content }: { content: string }) {
   const Content = useMemo(() => (
     <ReactMarkdown
       className="toc-content dark:text-neutral-300"
-      remarkPlugins={[gfm, remarkMermaid, remarkMath, remarkAlert]}
+      remarkPlugins={[gfm, remarkMermaid, remarkMath, remarkAlert, remarkBreaks]}
       children={content}
       rehypePlugins={[rehypeKatex, rehypeRaw]}
       components={{
@@ -78,14 +145,13 @@ export function Markdown({ content }: { content: string }) {
             rounded: boolean;
             scale: string;
           }) => (
-            <img
+            <MarkdownImage
               src={src}
-              {...props}
-              onClick={() => {
-                show(src)
-              }}
-              className={`mx-auto ${rounded ? "rounded-xl" : ""}`}
-              style={{ zoom: scale }}
+              alt={props.alt}
+              show={show}
+              rounded={rounded}
+              scale={scale}
+              className={props.className}
             />
           );
           if (
@@ -115,7 +181,7 @@ export function Markdown({ content }: { content: string }) {
           const isCodeBlock = curContent.trimStart().startsWith("```");
 
           const codeBlockStyle = {
-            fontFamily: '"Fira Code", monospace',
+            fontFamily: 'ui-monospace, "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace',
             fontSize: "14px",
             fontVariantLigatures: "normal",
             WebkitFontFeatureSettings: '"liga" 1',
@@ -233,8 +299,9 @@ export function Markdown({ content }: { content: string }) {
           return (
             <h1
               id={children?.toString()}
-              className="text-3xl font-bold mt-4"
               {...props}
+              className={`${props.className || ""} text-3xl font-bold mt-4`.trim()}
+              style={{ ...props.style, scrollMarginTop: "var(--header-scroll-offset, 7rem)" }}
             >
               {children}
             </h1>
@@ -244,8 +311,9 @@ export function Markdown({ content }: { content: string }) {
           return (
             <h2
               id={children?.toString()}
-              className="text-2xl font-bold mt-4"
               {...props}
+              className={`${props.className || ""} text-2xl font-bold mt-4`.trim()}
+              style={{ ...props.style, scrollMarginTop: "var(--header-scroll-offset, 7rem)" }}
             >
               {children}
             </h2>
@@ -255,8 +323,9 @@ export function Markdown({ content }: { content: string }) {
           return (
             <h3
               id={children?.toString()}
-              className="text-xl font-bold mt-4"
               {...props}
+              className={`${props.className || ""} text-xl font-bold mt-4`.trim()}
+              style={{ ...props.style, scrollMarginTop: "var(--header-scroll-offset, 7rem)" }}
             >
               {children}
             </h3>
@@ -266,8 +335,9 @@ export function Markdown({ content }: { content: string }) {
           return (
             <h4
               id={children?.toString()}
-              className="text-lg font-bold mt-4"
               {...props}
+              className={`${props.className || ""} text-lg font-bold mt-4`.trim()}
+              style={{ ...props.style, scrollMarginTop: "var(--header-scroll-offset, 7rem)" }}
             >
               {children}
             </h4>
@@ -277,8 +347,9 @@ export function Markdown({ content }: { content: string }) {
           return (
             <h5
               id={children?.toString()}
-              className="text-base font-bold mt-4"
               {...props}
+              className={`${props.className || ""} text-base font-bold mt-4`.trim()}
+              style={{ ...props.style, scrollMarginTop: "var(--header-scroll-offset, 7rem)" }}
             >
               {children}
             </h5>
@@ -288,8 +359,9 @@ export function Markdown({ content }: { content: string }) {
           return (
             <h6
               id={children?.toString()}
-              className="text-sm font-bold mt-4"
               {...props}
+              className={`${props.className || ""} text-sm font-bold mt-4`.trim()}
+              style={{ ...props.style, scrollMarginTop: "var(--header-scroll-offset, 7rem)" }}
             >
               {children}
             </h6>
@@ -336,6 +408,22 @@ export function Markdown({ content }: { content: string }) {
             return child;
           });
           return <section {...props}>{modifiedChildren}</section>;
+        },
+        iframe({ node, src, title, ...props }) {
+          return (
+            <div className="my-4 w-full">
+              <iframe
+                {...props}
+                src={src}
+                title={title || "Embedded content"}
+                className="w-full rounded-xl border border-black/10 dark:border-white/10"
+                style={{ minHeight: "400px" }}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+              />
+            </div>
+          );
         },
         div({ children, node, ...props }) {
           return <div {...props}>{children}</div>;
